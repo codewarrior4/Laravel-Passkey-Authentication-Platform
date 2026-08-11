@@ -4,6 +4,10 @@
 @source '../../storage/framework/views/*.php';
 
 @theme {
+    --color-ink: oklch(0.16 0.02 260);
+    --color-card: oklch(0.22 0.02 260);
+    --color-accent: oklch(0.79 0.15 70);
+    --color-accent-cool: oklch(0.77 0.09 205);
     --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
         'Segoe UI Symbol', 'Noto Color Emoji';
 }

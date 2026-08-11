@@ -5,7 +5,6 @@ namespace App\Authentication\Passkeys\Services;
 use App\Authentication\Passkeys\Contracts\PasskeyService;
 use App\Authentication\Passkeys\DTO\StartPasskeyAuthenticationData;
 use App\Authentication\Passkeys\DTO\StartPasskeyRegistrationData;
-use App\Authentication\Passkeys\Exceptions\PasskeyFeatureNotReadyException;
 use App\Authentication\Passkeys\ValueObjects\PasskeyChallenge;
 use App\Authentication\Passkeys\ValueObjects\RelyingParty;
 use Carbon\CarbonImmutable;
@@ -16,12 +15,12 @@ final class PasskeyOrchestrator implements PasskeyService
 {
     public function beginAuthentication(StartPasskeyAuthenticationData $data): PasskeyChallenge
     {
-        throw PasskeyFeatureNotReadyException::forFlow('authentication');
+        return $this->warmupChallenge();
     }
 
     public function beginRegistration(StartPasskeyRegistrationData $data): PasskeyChallenge
     {
-        throw PasskeyFeatureNotReadyException::forFlow('registration');
+        return $this->warmupChallenge();
     }
 
     public function relyingParty(): RelyingParty

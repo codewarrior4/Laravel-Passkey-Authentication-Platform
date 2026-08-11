@@ -2,11 +2,11 @@
 
 namespace App\Authentication\Passkeys\Contracts;
 
-use App\Authentication\Passkeys\Services\NullAuthenticationAudit;
+use App\Authentication\Passkeys\Services\DatabaseAuthenticationAudit;
 use Illuminate\Container\Attributes\Bind;
 use Illuminate\Container\Attributes\Scoped;
 
-#[Bind(NullAuthenticationAudit::class)]
+#[Bind(DatabaseAuthenticationAudit::class)]
 #[Scoped]
 interface AuthenticationAudit
 {
