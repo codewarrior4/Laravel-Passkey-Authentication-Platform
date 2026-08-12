@@ -3,6 +3,7 @@
 namespace App\Authentication\Passkeys\Actions;
 
 use App\Authentication\Passkeys\Contracts\AuthenticationAudit;
+use App\Authentication\Passkeys\Contracts\PasskeyService;
 use App\Authentication\Passkeys\DTO\FinishPasskeyRegistrationData;
 use App\Authentication\Passkeys\Exceptions\PasskeyException;
 use App\Authentication\Passkeys\Support\Base64Url;
@@ -11,7 +12,10 @@ use Illuminate\Support\Facades\DB;
 
 final readonly class FinishPasskeyRegistrationAction
 {
-    public function __construct(private AuthenticationAudit $audit) {}
+    public function __construct(
+        private AuthenticationAudit $audit,
+        private PasskeyService $passkeyService,
+    ) {}
 
     public function handle(FinishPasskeyRegistrationData $data): Passkey
     {
@@ -35,7 +39,9 @@ final readonly class FinishPasskeyRegistrationAction
                 throw new PasskeyException('Challenge mismatch during passkey registration.');
             }
 
-            if (($clientData['origin'] ?? null) !== $data->origin) {
+            $relyingParty = $this->passkeyService->relyingParty();
+
+            if (($clientData['origin'] ?? null) !== $data->origin || ! $relyingParty->allowsOrigin($data->origin)) {
                 throw new PasskeyException('Origin mismatch during passkey registration.');
             }
 
@@ -49,7 +55,7 @@ final readonly class FinishPasskeyRegistrationAction
                 throw new PasskeyException('Authenticator data is incomplete.');
             }
 
-            $expectedRpIdHash = hash('sha256', config('passkeys.relying_party.id'), true);
+            $expectedRpIdHash = hash('sha256', $relyingParty->id, true);
             $rpIdHash = substr($authenticatorData, 0, 32);
             $flags = ord(substr($authenticatorData, 32, 1));
             $signCount = unpack('Ncount', substr($authenticatorData, 33, 4))['count'];

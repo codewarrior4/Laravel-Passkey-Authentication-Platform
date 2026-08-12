@@ -2,23 +2,34 @@
 
 namespace App\Http\Controllers;
 
+use App\Authentication\Passkeys\Actions\FinishPasskeyAuthenticationAction;
 use App\Authentication\Passkeys\Actions\FinishPasskeyRegistrationAction;
 use App\Authentication\Passkeys\Actions\PreviewPasskeyAuthenticationAction;
 use App\Authentication\Passkeys\Actions\PreviewPasskeyRegistrationAction;
+use App\Authentication\Passkeys\Actions\RevokePasskeyAction;
+use App\Authentication\Passkeys\Actions\StartBrowserPasskeyAuthenticationAction;
 use App\Authentication\Passkeys\Actions\StartBrowserPasskeyRegistrationAction;
 use App\Authentication\Passkeys\Contracts\PasskeyService;
+use App\Authentication\Passkeys\DTO\FinishPasskeyAuthenticationData;
 use App\Authentication\Passkeys\DTO\FinishPasskeyRegistrationData;
 use App\Authentication\Passkeys\DTO\LoginPasskeyPreviewData;
 use App\Authentication\Passkeys\DTO\PasskeyPreviewResult;
 use App\Authentication\Passkeys\DTO\RegisterPasskeyPreviewData;
+use App\Authentication\Passkeys\DTO\StartPasskeyAuthenticationData;
 use App\Authentication\Passkeys\Exceptions\PasskeyException;
+use App\Http\Requests\Passkeys\FinishPasskeyAuthenticationRequest;
 use App\Http\Requests\Passkeys\FinishPasskeyRegistrationRequest;
 use App\Http\Requests\Passkeys\LoginPasskeyPreviewRequest;
 use App\Http\Requests\Passkeys\RegisterPasskeyPreviewRequest;
+use App\Http\Requests\Passkeys\StartPasskeyAuthenticationRequest;
 use App\Http\Requests\Passkeys\StartPasskeyRegistrationRequest;
+use App\Models\AuthenticationEvent;
+use App\Models\Device;
+use App\Models\Passkey;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class PasskeyExperienceController extends Controller
@@ -29,7 +40,7 @@ class PasskeyExperienceController extends Controller
             'page_title' => 'Passkey Experience',
             'page_eyebrow' => 'Showcase Surface',
             'page_heading' => 'A polished passkey experience for live demos and product reviews.',
-            'page_copy' => 'Guide people through registration, login, and the authenticated dashboard from one coherent interface while the deeper WebAuthn backend work continues.',
+            'page_copy' => 'Move from enrollment to sign-in to a protected account experience in one clear flow.',
             'current_route' => 'passkeys.overview',
         ]));
     }
@@ -40,7 +51,7 @@ class PasskeyExperienceController extends Controller
             'page_title' => 'Register Passkey',
             'page_eyebrow' => 'Registration',
             'page_heading' => 'Register a passkey in a flow that feels production-ready.',
-            'page_copy' => 'Capture the product story now with a presentable onboarding screen while the real WebAuthn ceremony is wired in behind it.',
+            'page_copy' => 'A calm, focused setup flow for creating a passkey without exposing protected account data.',
             'current_route' => 'passkeys.register',
         ]));
     }
@@ -90,7 +101,7 @@ class PasskeyExperienceController extends Controller
 
         return response()->json([
             'message' => "Passkey registration completed for {$passkey->label}.",
-            'redirect_to' => route('passkeys.dashboard'),
+            'redirect_to' => route('passkeys.login'),
         ]);
     }
 
@@ -115,9 +126,56 @@ class PasskeyExperienceController extends Controller
             'page_title' => 'Passkey Login',
             'page_eyebrow' => 'Authentication',
             'page_heading' => 'Sign in with the fastest path to a secure session.',
-            'page_copy' => 'This screen is designed to demo confidence, recovery cues, and device trust while the signature verification flow is being finished.',
+            'page_copy' => 'A clean sign-in surface that reveals nothing sensitive until authentication succeeds.',
             'current_route' => 'passkeys.login',
         ]));
+    }
+
+    public function startAuthentication(
+        StartPasskeyAuthenticationRequest $request,
+        StartBrowserPasskeyAuthenticationAction $startBrowserPasskeyAuthenticationAction,
+    ): JsonResponse {
+        $ceremony = $startBrowserPasskeyAuthenticationAction->handle(new StartPasskeyAuthenticationData(
+            email: null,
+            ipAddress: $request->ip() ?? '127.0.0.1',
+            userAgent: (string) $request->userAgent(),
+        ));
+
+        session([
+            'passkey_authentication_challenge' => $ceremony->options['challenge'],
+            'passkey_authentication_expires_at' => now()->addMinutes(5)->toIso8601String(),
+        ]);
+
+        return response()->json([
+            'passkey_id' => $ceremony->passkeyId,
+            'public_key' => $ceremony->options,
+        ]);
+    }
+
+    public function finishAuthentication(
+        FinishPasskeyAuthenticationRequest $request,
+        FinishPasskeyAuthenticationAction $finishPasskeyAuthenticationAction,
+    ): JsonResponse {
+        try {
+            $user = $finishPasskeyAuthenticationAction->handle(new FinishPasskeyAuthenticationData(
+                credentialId: $request->string('credential_id')->toString(),
+                clientDataJson: $request->string('client_data_json')->toString(),
+                authenticatorData: $request->string('authenticator_data')->toString(),
+                signature: $request->string('signature')->toString(),
+                origin: $request->string('origin')->toString(),
+            ), $request);
+        } catch (PasskeyException $exception) {
+            return response()->json([
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+
+        session(['passkey_demo_user_id' => $user->id]);
+
+        return response()->json([
+            'message' => "Passkey login completed for {$user->email}.",
+            'redirect_to' => route('passkeys.dashboard'),
+        ]);
     }
 
     public function storeLoginPreview(
@@ -131,7 +189,39 @@ class PasskeyExperienceController extends Controller
             userAgent: (string) $request->userAgent(),
         ));
 
+        auth()->loginUsingId($result->userId);
+        $request->session()->regenerate();
+
         return $this->redirectWithDemoState('passkeys.dashboard', $result);
+    }
+
+    public function logout(Request $request): RedirectResponse
+    {
+        auth()->guard()->logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
+        return to_route('passkeys.login')->with('status', 'You have been signed out of the passkey dashboard.');
+    }
+
+    public function revokePasskey(
+        Request $request,
+        Passkey $passkey,
+        RevokePasskeyAction $revokePasskeyAction,
+    ): RedirectResponse {
+        $user = $this->currentAuthenticatedUser();
+
+        abort_unless($user instanceof User, 403);
+        abort_unless($passkey->user_id === $user->id, 404);
+
+        $revokePasskeyAction->handle(
+            $passkey,
+            $user,
+            $request->ip() ?? '127.0.0.1',
+            (string) $request->userAgent(),
+        );
+
+        return to_route('passkeys.dashboard')->with('status', 'Passkey removed from this account.');
     }
 
     public function dashboard(PasskeyService $passkeyService): View
@@ -140,7 +230,7 @@ class PasskeyExperienceController extends Controller
             'page_title' => 'Security Dashboard',
             'page_eyebrow' => 'Security Center',
             'page_heading' => 'See the account, devices, sessions, and audit story in one place.',
-            'page_copy' => 'This dashboard is where device control, revocation, suspicious activity review, and rollout awareness come together for demos and stakeholder walkthroughs.',
+            'page_copy' => 'A protected view for trusted devices, active sessions, and account activity.',
             'current_route' => 'passkeys.dashboard',
         ]));
     }
@@ -151,81 +241,173 @@ class PasskeyExperienceController extends Controller
      */
     private function buildPageData(PasskeyService $passkeyService, array $page): array
     {
-        $demoUser = $this->currentDemoUser();
+        $isProtectedPage = $page['current_route'] === 'passkeys.dashboard';
+        $isPublicPage = in_array($page['current_route'], ['passkeys.overview', 'passkeys.login', 'passkeys.register'], true);
+        $focusUser = $this->currentAuthenticatedUser()
+            ?? $this->currentDemoUser()
+            ?? User::query()
+                ->with(['authenticationEvents', 'devices', 'passkeys'])
+                ->withCount(['authenticationEvents', 'devices', 'passkeys'])
+                ->latest('id')
+                ->first();
+
+        $activePasskeysCount = Passkey::query()
+            ->where('status', 'active')
+            ->whereNull('revoked_at')
+            ->count();
+
+        $pendingPasskeysCount = Passkey::query()
+            ->where('status', 'pending')
+            ->whereNull('revoked_at')
+            ->count();
+
+        $revokedDevicesCount = Device::query()
+            ->whereNotNull('revoked_at')
+            ->count();
+
+        $latestAuthenticationEvent = AuthenticationEvent::query()
+            ->latest('occurred_at')
+            ->value('occurred_at');
+
+        $registeredDevices = Device::query()
+            ->with(['user', 'passkeys' => fn ($query) => $query->latest('last_used_at')])
+            ->latest('created_at')
+            ->take(4)
+            ->get()
+            ->map(fn (Device $device): array => [
+                'name' => $device->label,
+                'owner' => $device->user?->email ?? 'No linked account',
+                'type' => ucfirst($device->type ?: 'platform').' device',
+                'last_used' => $device->last_used_at?->diffForHumans() ?? 'Not used yet',
+                'passkeys_count' => $device->passkeys->count(),
+                'trust' => $device->revoked_at ? 'Revoked' : 'Active',
+                'trust_tone' => $device->revoked_at ? 'muted' : 'good',
+            ])
+            ->values()
+            ->all();
+
+        $registeredPasskeys = $isProtectedPage && $focusUser !== null
+            ? $focusUser->passkeys
+                ->sortByDesc('created_at')
+                ->map(fn (Passkey $passkey): array => [
+                    'id' => $passkey->id,
+                    'device' => $passkey->device?->label ?? 'Unknown device',
+                    'label' => $passkey->label,
+                    'last_used' => $passkey->last_used_at?->diffForHumans() ?? 'Not used yet',
+                    'status' => $passkey->revoked_at ? 'Revoked' : ucfirst($passkey->status),
+                    'status_tone' => $passkey->revoked_at ? 'muted' : 'good',
+                ])
+                ->values()
+                ->all()
+            : [];
+
+        $recentSessions = Device::query()
+            ->with('user')
+            ->whereNotNull('last_used_at')
+            ->latest('last_used_at')
+            ->take(3)
+            ->get()
+            ->map(fn (Device $device): array => [
+                'device' => trim(collect([$device->browser, $device->platform])->filter()->implode(' on ')) ?: $device->label,
+                'location' => $device->ip_address ?? 'IP pending capture',
+                'owner' => $device->user?->email ?? 'No linked account',
+                'status' => $device->revoked_at ? 'Revoked' : 'Recent session',
+                'status_tone' => $device->revoked_at ? 'muted' : 'good',
+            ])
+            ->values()
+            ->all();
+
+        $recentAuditEvents = AuthenticationEvent::query()
+            ->with(['device', 'user'])
+            ->latest('occurred_at')
+            ->take(4)
+            ->get()
+            ->map(fn (AuthenticationEvent $event): array => [
+                'detail' => $event->device?->label
+                    ?? $event->user?->email
+                    ?? $event->ip_address
+                    ?? 'Security event captured.',
+                'time' => $event->occurred_at?->diffForHumans() ?? 'Just now',
+                'title' => str($event->event)->replace('.', ' ')->headline()->toString(),
+                'tone' => str($event->event)->contains(['failed', 'blocked', 'revoked']) ? 'alert' : 'good',
+            ])
+            ->values()
+            ->all();
+
+        $heroMetrics = $isProtectedPage
+            ? [
+                [
+                    'label' => 'Accounts',
+                    'value' => (string) User::query()->count(),
+                    'detail' => 'People currently stored in the passkey workspace.',
+                ],
+                [
+                    'label' => 'Active passkeys',
+                    'value' => (string) $activePasskeysCount,
+                    'detail' => 'Credentials available for real browser authentication.',
+                ],
+                [
+                    'label' => 'Audit events',
+                    'value' => (string) AuthenticationEvent::query()->count(),
+                    'detail' => $latestAuthenticationEvent === null
+                        ? 'No security events have been captured yet.'
+                        : 'Latest security event '.$latestAuthenticationEvent->diffForHumans().'.',
+                ],
+            ]
+            : [];
 
         return [
             ...$page,
             'featureFlags' => config('passkeys.feature_flags'),
-            'heroMetrics' => $demoUser === null ? [
-                ['label' => 'Passkey adoption target', 'value' => '72%', 'detail' => 'Target for the internal pilot before wider rollout.'],
-                ['label' => 'Trusted devices online', 'value' => '12', 'detail' => 'Combination of desktop, mobile, and security-key based access.'],
-                ['label' => 'Median sign-in time', 'value' => '8.4s', 'detail' => 'Goal for a fast, low-friction authentication ceremony.'],
-            ] : [
-                ['label' => 'Registered devices', 'value' => (string) $demoUser->devices->count(), 'detail' => 'Devices currently tied to the active demo account.'],
-                ['label' => 'Passkey drafts or credentials', 'value' => (string) $demoUser->passkeys->count(), 'detail' => 'Tuesday registration core now persists passkey records and challenge windows.'],
-                ['label' => 'Audit events captured', 'value' => (string) $demoUser->authenticationEvents->count(), 'detail' => 'Security events are now stored in the database for review.'],
-            ],
+            'heroMetrics' => $heroMetrics,
             'navigationItems' => [
                 ['label' => 'Overview', 'route' => 'passkeys.overview'],
                 ['label' => 'Register', 'route' => 'passkeys.register'],
                 ['label' => 'Login', 'route' => 'passkeys.login'],
                 ['label' => 'Dashboard', 'route' => 'passkeys.dashboard'],
             ],
-            'recentAuditEvents' => $demoUser === null ? [
-                ['title' => 'New MacBook Pro registered', 'detail' => 'Product Design team laptop added from San Francisco, CA.', 'time' => '6 minutes ago', 'tone' => 'good'],
-                ['title' => 'Authentication challenge created', 'detail' => 'Web session requested from Chrome on macOS.', 'time' => '21 minutes ago', 'tone' => 'neutral'],
-                ['title' => 'Recovery option reviewed', 'detail' => 'Backup recovery process viewed by account owner.', 'time' => '2 hours ago', 'tone' => 'neutral'],
-                ['title' => 'High-risk login blocked', 'detail' => 'Unknown browser signature rejected after abnormal IP shift.', 'time' => 'Yesterday', 'tone' => 'alert'],
-            ] : $demoUser->authenticationEvents
-                ->sortByDesc('occurred_at')
-                ->take(4)
-                ->map(fn ($event) => [
-                    'detail' => $event->metadata['device_label'] ?? $event->user_agent ?? 'Security event captured for the active demo account.',
-                    'time' => $event->occurred_at?->diffForHumans() ?? 'Just now',
-                    'title' => str($event->event)->replace('.', ' ')->headline()->toString(),
-                    'tone' => str($event->event)->contains(['failed', 'blocked']) ? 'alert' : 'good',
-                ])
-                ->values()
-                ->all(),
-            'recentSessions' => $demoUser === null ? [
-                ['location' => 'San Francisco, CA', 'device' => 'Safari on MacBook Pro', 'status' => 'Current session', 'status_tone' => 'good'],
-                ['location' => 'Austin, TX', 'device' => 'Chrome on Pixel 10', 'status' => 'Trusted mobile', 'status_tone' => 'neutral'],
-                ['location' => 'London, UK', 'device' => 'Security key on shared kiosk', 'status' => 'Ended 2 days ago', 'status_tone' => 'muted'],
-            ] : $demoUser->devices
-                ->sortByDesc('last_used_at')
-                ->take(3)
-                ->map(fn ($device) => [
-                    'device' => "{$device->browser} on {$device->platform}",
-                    'location' => $device->ip_address ?? 'Demo environment',
-                    'status' => $device->last_used_at ? 'Recent session' : 'Registered device',
-                    'status_tone' => $device->revoked_at ? 'muted' : 'good',
-                ])
-                ->values()
-                ->all(),
-            'registeredDevices' => $demoUser === null ? [
-                ['name' => 'Executive MacBook', 'type' => 'Platform passkey', 'last_used' => '3 minutes ago', 'trust' => 'Primary', 'trust_tone' => 'good'],
-                ['name' => 'Product Demo iPhone', 'type' => 'Phone passkey', 'last_used' => '42 minutes ago', 'trust' => 'Trusted backup', 'trust_tone' => 'neutral'],
-                ['name' => 'YubiKey 5 NFC', 'type' => 'Hardware key', 'last_used' => '4 days ago', 'trust' => 'Recovery device', 'trust_tone' => 'muted'],
-            ] : $demoUser->devices
-                ->sortByDesc('created_at')
-                ->take(4)
-                ->map(fn ($device) => [
-                    'name' => $device->label,
-                    'type' => "{$device->type} passkey",
-                    'last_used' => $device->last_used_at?->diffForHumans() ?? 'Not used yet',
-                    'trust' => $device->revoked_at ? 'Revoked' : 'Active',
-                    'trust_tone' => $device->revoked_at ? 'muted' : 'good',
-                ])
-                ->values()
-                ->all(),
+            'recentAuditEvents' => $recentAuditEvents,
+            'recentSessions' => $recentSessions,
+            'registeredDevices' => $registeredDevices,
+            'registeredPasskeys' => $registeredPasskeys,
             'relyingParty' => $passkeyService->relyingParty(),
             'securitySignals' => [
-                ['label' => 'Session hardening', 'state' => 'Ready', 'description' => 'Secure cookie defaults, rotation, and trusted device separation are in scope.'],
-                ['label' => 'Risk detection', 'state' => 'In progress', 'description' => 'New-device, impossible-travel, and unusual frequency signals are being staged.'],
-                ['label' => 'Instant rollback', 'state' => 'Protected', 'description' => 'Feature flags are keeping release control close to operations.'],
+                [
+                    'label' => 'Active credentials',
+                    'state' => (string) $activePasskeysCount,
+                    'description' => 'Passkeys currently marked active and available for sign-in.',
+                ],
+                [
+                    'label' => 'Pending registrations',
+                    'state' => (string) $pendingPasskeysCount,
+                    'description' => 'Registration drafts waiting for a browser ceremony to finish.',
+                ],
+                [
+                    'label' => 'Revoked devices',
+                    'state' => (string) $revokedDevicesCount,
+                    'description' => 'Devices removed from trust but still preserved in the audit trail.',
+                ],
             ],
-            'demoUser' => $demoUser,
+            'demoUser' => $isProtectedPage ? $focusUser : null,
+            'deviceOptions' => $isProtectedPage ? $this->deviceOptions($registeredDevices) : [],
+            'isProtectedPage' => $isProtectedPage,
+            'isPublicPage' => $isPublicPage,
+            'showHeroMetrics' => $isProtectedPage,
+            'showOperationsPanel' => $isProtectedPage,
         ];
+    }
+
+    private function currentAuthenticatedUser(): ?User
+    {
+        $authenticatedUser = auth()->user();
+
+        if (! $authenticatedUser instanceof User) {
+            return null;
+        }
+
+        return User::query()
+            ->with(['authenticationEvents', 'devices', 'passkeys'])
+            ->find($authenticatedUser->id);
     }
 
     private function currentDemoUser(): ?User
@@ -239,6 +421,20 @@ class PasskeyExperienceController extends Controller
         return User::query()
             ->with(['authenticationEvents', 'devices', 'passkeys'])
             ->find((int) $demoUserId);
+    }
+
+    /**
+     * @param  array<int, array{name: string}>  $registeredDevices
+     * @return array<int, string>
+     */
+    private function deviceOptions(array $registeredDevices): array
+    {
+        return collect($registeredDevices)
+            ->pluck('name')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
     }
 
     private function redirectWithDemoState(string $route, PasskeyPreviewResult $result): RedirectResponse

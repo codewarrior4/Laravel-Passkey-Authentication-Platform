@@ -25,11 +25,16 @@ final class PasskeyOrchestrator implements PasskeyService
 
     public function relyingParty(): RelyingParty
     {
-        /** @var array{id: string, name: string, origins: array<int, string>} $configuration */
+        /** @var array{id: string, ids: array<int, string>, name: string, origins: array<int, string>} $configuration */
         $configuration = config('passkeys.relying_party');
+        $requestHost = request()->getHost();
+        $allowedIds = Arr::wrap(Arr::get($configuration, 'ids', []));
+        $resolvedId = in_array($requestHost, $allowedIds, true)
+            ? $requestHost
+            : Arr::get($configuration, 'id', 'localhost');
 
         return new RelyingParty(
-            id: Arr::get($configuration, 'id', 'localhost'),
+            id: $resolvedId,
             name: Arr::get($configuration, 'name', config('app.name', 'Laravel')),
             origins: Arr::wrap(Arr::get($configuration, 'origins', [])),
         );

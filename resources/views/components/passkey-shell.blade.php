@@ -8,6 +8,8 @@
     'pageHeading',
     'pageTitle',
     'relyingParty',
+    'showHeroMetrics' => false,
+    'showOperationsPanel' => false,
 ])
 
 <!DOCTYPE html>
@@ -37,7 +39,8 @@
                             </div>
                         </div>
 
-                        <nav class="flex flex-wrap items-center gap-2">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <nav class="flex flex-wrap items-center gap-2">
                             @foreach ($navigationItems as $navigationItem)
                                 @php($isActive = $currentRoute === $navigationItem['route'])
                                 <a
@@ -47,49 +50,66 @@
                                     {{ $navigationItem['label'] }}
                                 </a>
                             @endforeach
-                        </nav>
+                            </nav>
+
+                            @auth
+                                <form method="POST" action="{{ route('passkeys.logout') }}">
+                                    @csrf
+                                    <button
+                                        type="submit"
+                                        class="inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-stone-300 transition hover:bg-white/[0.08] hover:text-white"
+                                    >
+                                        Sign out
+                                    </button>
+                                </form>
+                            @endauth
+                        </div>
                     </div>
                 </header>
 
-                <section class="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+                <section class="grid gap-6 {{ $showOperationsPanel ? 'lg:grid-cols-[1.2fr_0.8fr]' : '' }}">
                     <div class="overflow-hidden rounded-[2rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.2),_transparent_28%),linear-gradient(135deg,_rgba(28,25,23,0.92),_rgba(12,10,9,0.95))] p-7 shadow-2xl shadow-black/30 lg:p-9">
                         <p class="text-xs font-semibold uppercase tracking-[0.32em] text-amber-300/80">{{ $pageEyebrow }}</p>
                         <h2 class="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-white lg:text-5xl">{{ $pageHeading }}</h2>
                         <p class="mt-5 max-w-3xl text-base leading-8 text-stone-300 lg:text-lg">{{ $pageCopy }}</p>
 
-                        <div class="mt-8 grid gap-4 md:grid-cols-3">
-                            @foreach ($heroMetrics as $heroMetric)
-                                <article class="rounded-3xl border border-white/10 bg-white/[0.05] p-5">
-                                    <p class="text-xs font-semibold uppercase tracking-[0.22em] text-stone-400">{{ $heroMetric['label'] }}</p>
-                                    <p class="mt-3 text-3xl font-semibold text-white">{{ $heroMetric['value'] }}</p>
-                                    <p class="mt-2 text-sm leading-6 text-stone-300">{{ $heroMetric['detail'] }}</p>
-                                </article>
-                            @endforeach
-                        </div>
-                    </div>
-
-                    <aside class="grid gap-5 rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 shadow-xl shadow-black/20 backdrop-blur">
-                        <div>
-                            <p class="text-xs font-semibold uppercase tracking-[0.24em] text-stone-400">Relying Party</p>
-                            <p class="mt-2 text-2xl font-semibold text-white">{{ $relyingParty->name }}</p>
-                            <div class="mt-4 grid gap-2 text-sm text-stone-300">
-                                <p><span class="text-stone-500">Identifier</span> {{ $relyingParty->id }}</p>
-                                <p><span class="text-stone-500">Origins</span> {{ implode(', ', $relyingParty->origins) ?: 'None configured yet' }}</p>
-                            </div>
-                        </div>
-
-                        <div>
-                            <p class="text-xs font-semibold uppercase tracking-[0.24em] text-stone-400">Release controls</p>
-                            <div class="mt-4 grid gap-3">
-                                @foreach ($featureFlags as $label => $flag)
-                                    <div class="flex items-center justify-between gap-4 rounded-2xl border border-white/8 bg-black/15 px-4 py-3">
-                                        <span class="text-sm font-medium capitalize text-white">{{ str_replace('_', ' ', $label) }}</span>
-                                        <code class="text-xs text-amber-200">{{ $flag }}</code>
-                                    </div>
+                        @if ($showHeroMetrics && count($heroMetrics) > 0)
+                            <div class="mt-8 grid gap-4 md:grid-cols-3">
+                                @foreach ($heroMetrics as $heroMetric)
+                                    <article class="rounded-3xl border border-white/10 bg-white/[0.05] p-5">
+                                        <p class="text-xs font-semibold uppercase tracking-[0.22em] text-stone-400">{{ $heroMetric['label'] }}</p>
+                                        <p class="mt-3 text-3xl font-semibold text-white">{{ $heroMetric['value'] }}</p>
+                                        <p class="mt-2 text-sm leading-6 text-stone-300">{{ $heroMetric['detail'] }}</p>
+                                    </article>
                                 @endforeach
                             </div>
-                        </div>
-                    </aside>
+                        @endif
+                    </div>
+
+                    @if ($showOperationsPanel)
+                        <aside class="grid gap-5 rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 shadow-xl shadow-black/20 backdrop-blur">
+                            <div>
+                                <p class="text-xs font-semibold uppercase tracking-[0.24em] text-stone-400">Relying Party</p>
+                                <p class="mt-2 text-2xl font-semibold text-white">{{ $relyingParty->name }}</p>
+                                <div class="mt-4 grid gap-2 text-sm text-stone-300">
+                                    <p><span class="text-stone-500">Identifier</span> {{ $relyingParty->id }}</p>
+                                    <p><span class="text-stone-500">Origins</span> {{ implode(', ', $relyingParty->origins) ?: 'None configured yet' }}</p>
+                                </div>
+                            </div>
+
+                            <div>
+                                <p class="text-xs font-semibold uppercase tracking-[0.24em] text-stone-400">Release controls</p>
+                                <div class="mt-4 grid gap-3">
+                                    @foreach ($featureFlags as $label => $flag)
+                                        <div class="flex items-center justify-between gap-4 rounded-2xl border border-white/8 bg-black/15 px-4 py-3">
+                                            <span class="text-sm font-medium capitalize text-white">{{ str_replace('_', ' ', $label) }}</span>
+                                            <code class="text-xs text-amber-200">{{ $flag }}</code>
+                                        </div>
+                                    @endforeach
+                                </div>
+                            </div>
+                        </aside>
+                    @endif
                 </section>
 
                 @if (session('status'))

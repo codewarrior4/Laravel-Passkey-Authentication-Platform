@@ -2,6 +2,7 @@
 
 namespace App\Authentication\Passkeys\Actions;
 
+use App\Authentication\Passkeys\Contracts\PasskeyService;
 use App\Authentication\Passkeys\DTO\RegisterPasskeyPreviewData;
 use App\Authentication\Passkeys\DTO\RegistrationCeremonyOptions;
 use App\Authentication\Passkeys\Support\Base64Url;
@@ -9,7 +10,10 @@ use App\Models\User;
 
 final readonly class StartBrowserPasskeyRegistrationAction
 {
-    public function __construct(private PreviewPasskeyRegistrationAction $previewPasskeyRegistrationAction) {}
+    public function __construct(
+        private PasskeyService $passkeyService,
+        private PreviewPasskeyRegistrationAction $previewPasskeyRegistrationAction,
+    ) {}
 
     public function handle(RegisterPasskeyPreviewData $data): RegistrationCeremonyOptions
     {
@@ -18,13 +22,14 @@ final readonly class StartBrowserPasskeyRegistrationAction
         /** @var User $user */
         $user = User::query()->with('passkeys')->findOrFail($result->userId);
         $passkey = $user->passkeys()->findOrFail($result->passkeyId);
+        $relyingParty = $this->passkeyService->relyingParty();
 
         return new RegistrationCeremonyOptions(
             passkeyId: $passkey->id,
             options: [
                 'rp' => [
-                    'id' => config('passkeys.relying_party.id'),
-                    'name' => config('passkeys.relying_party.name'),
+                    'id' => $relyingParty->id,
+                    'name' => $relyingParty->name,
                 ],
                 'user' => [
                     'displayName' => $user->name,
@@ -38,9 +43,12 @@ final readonly class StartBrowserPasskeyRegistrationAction
                 ],
                 'timeout' => 300000,
                 'attestation' => 'none',
+                'hints' => ['client-device'],
                 'authenticatorSelection' => [
-                    'residentKey' => 'preferred',
-                    'userVerification' => 'preferred',
+                    'authenticatorAttachment' => 'platform',
+                    'requireResidentKey' => true,
+                    'residentKey' => 'required',
+                    'userVerification' => 'required',
                 ],
                 'excludeCredentials' => $user->passkeys
                     ->filter(fn ($existingPasskey) => $existingPasskey->credential_id !== null)
