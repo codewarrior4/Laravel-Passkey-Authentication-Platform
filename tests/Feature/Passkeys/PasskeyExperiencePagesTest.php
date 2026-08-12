@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Passkeys;
 
+use App\Authentication\Passkeys\Support\Base64Url;
 use App\Models\AuthenticationEvent;
 use App\Models\Device;
 use App\Models\Passkey;
@@ -23,7 +24,7 @@ class PasskeyExperiencePagesTest extends TestCase
         $this->get(route('passkeys.register'))
             ->assertOk()
             ->assertSeeText('Create a passkey')
-            ->assertSeeText('Create registration draft');
+            ->assertSeeText('Register passkey in browser');
 
         $this->get(route('passkeys.login'))
             ->assertOk()
@@ -63,6 +64,83 @@ class PasskeyExperiencePagesTest extends TestCase
         $this->assertDatabaseHas('authentication_events', [
             'event' => 'passkey.registration.requested',
             'user_id' => $user->id,
+        ]);
+    }
+
+    public function test_the_registration_start_endpoint_returns_creation_options_and_persists_a_draft(): void
+    {
+        $response = $this->postJson(route('passkeys.register.start'), [
+            'full_name' => 'Arielle Stone',
+            'work_email' => 'arielle@onely.app',
+            'device_name' => 'Executive MacBook',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonStructure([
+                'passkey_id',
+                'public_key' => [
+                    'attestation',
+                    'challenge',
+                    'pubKeyCredParams',
+                    'rp',
+                    'timeout',
+                    'user',
+                ],
+            ]);
+
+        $user = User::query()->where('email', 'arielle@onely.app')->firstOrFail();
+        $passkey = Passkey::query()->where('user_id', $user->id)->latest('id')->firstOrFail();
+
+        $this->assertSame('pending', $passkey->status);
+        $this->assertNotNull($passkey->current_challenge);
+        $this->assertNotNull($passkey->challenge_expires_at);
+    }
+
+    public function test_the_registration_finish_endpoint_activates_the_passkey(): void
+    {
+        $startResponse = $this->postJson(route('passkeys.register.start'), [
+            'full_name' => 'Arielle Stone',
+            'work_email' => 'arielle@onely.app',
+            'device_name' => 'Executive MacBook',
+        ]);
+
+        $startPayload = $startResponse->json();
+        $challenge = $startPayload['public_key']['challenge'];
+        $passkeyId = $startPayload['passkey_id'];
+
+        $rpIdHash = hash('sha256', config('passkeys.relying_party.id'), true);
+        $authenticatorData = $rpIdHash.chr(0x01).pack('N', 0);
+
+        $response = $this->postJson(route('passkeys.register.finish'), [
+            'authenticator_data' => Base64Url::encode($authenticatorData),
+            'client_data_json' => Base64Url::encode(json_encode([
+                'challenge' => $challenge,
+                'origin' => config('app.url'),
+                'type' => 'webauthn.create',
+            ], JSON_THROW_ON_ERROR)),
+            'credential_id' => Base64Url::encode('credential-123'),
+            'origin' => config('app.url'),
+            'passkey_id' => $passkeyId,
+            'public_key' => Base64Url::encode('public-key-material'),
+            'public_key_algorithm' => -7,
+            'transports' => ['internal'],
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonFragment([
+                'message' => 'Passkey registration completed for Executive MacBook.',
+            ]);
+
+        $this->assertDatabaseHas('passkeys', [
+            'credential_id_hash' => hash('sha256', Base64Url::encode('credential-123')),
+            'id' => $passkeyId,
+            'status' => 'active',
+        ]);
+
+        $this->assertDatabaseHas('authentication_events', [
+            'event' => 'passkey.registration.completed',
         ]);
     }
 

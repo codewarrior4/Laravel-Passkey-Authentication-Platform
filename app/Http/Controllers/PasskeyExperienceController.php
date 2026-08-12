@@ -2,15 +2,22 @@
 
 namespace App\Http\Controllers;
 
+use App\Authentication\Passkeys\Actions\FinishPasskeyRegistrationAction;
 use App\Authentication\Passkeys\Actions\PreviewPasskeyAuthenticationAction;
 use App\Authentication\Passkeys\Actions\PreviewPasskeyRegistrationAction;
+use App\Authentication\Passkeys\Actions\StartBrowserPasskeyRegistrationAction;
 use App\Authentication\Passkeys\Contracts\PasskeyService;
+use App\Authentication\Passkeys\DTO\FinishPasskeyRegistrationData;
 use App\Authentication\Passkeys\DTO\LoginPasskeyPreviewData;
 use App\Authentication\Passkeys\DTO\PasskeyPreviewResult;
 use App\Authentication\Passkeys\DTO\RegisterPasskeyPreviewData;
+use App\Authentication\Passkeys\Exceptions\PasskeyException;
+use App\Http\Requests\Passkeys\FinishPasskeyRegistrationRequest;
 use App\Http\Requests\Passkeys\LoginPasskeyPreviewRequest;
 use App\Http\Requests\Passkeys\RegisterPasskeyPreviewRequest;
+use App\Http\Requests\Passkeys\StartPasskeyRegistrationRequest;
 use App\Models\User;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\View\View;
 
@@ -36,6 +43,55 @@ class PasskeyExperienceController extends Controller
             'page_copy' => 'Capture the product story now with a presentable onboarding screen while the real WebAuthn ceremony is wired in behind it.',
             'current_route' => 'passkeys.register',
         ]));
+    }
+
+    public function startRegistration(
+        StartPasskeyRegistrationRequest $request,
+        StartBrowserPasskeyRegistrationAction $startBrowserPasskeyRegistrationAction,
+    ): JsonResponse {
+        $ceremony = $startBrowserPasskeyRegistrationAction->handle(new RegisterPasskeyPreviewData(
+            fullName: $request->string('full_name')->toString(),
+            workEmail: $request->string('work_email')->toString(),
+            deviceName: $request->string('device_name')->toString(),
+            ipAddress: $request->ip() ?? '127.0.0.1',
+            userAgent: (string) $request->userAgent(),
+        ));
+
+        session([
+            'passkey_demo_user_id' => User::query()->where('email', $request->string('work_email')->toString())->value('id'),
+        ]);
+
+        return response()->json([
+            'passkey_id' => $ceremony->passkeyId,
+            'public_key' => $ceremony->options,
+        ]);
+    }
+
+    public function finishRegistration(
+        FinishPasskeyRegistrationRequest $request,
+        FinishPasskeyRegistrationAction $finishPasskeyRegistrationAction,
+    ): JsonResponse {
+        try {
+            $passkey = $finishPasskeyRegistrationAction->handle(new FinishPasskeyRegistrationData(
+                passkeyId: (int) $request->integer('passkey_id'),
+                credentialId: $request->string('credential_id')->toString(),
+                clientDataJson: $request->string('client_data_json')->toString(),
+                authenticatorData: $request->string('authenticator_data')->toString(),
+                publicKey: $request->string('public_key')->toString(),
+                publicKeyAlgorithm: (int) $request->integer('public_key_algorithm'),
+                transports: $request->array('transports'),
+                origin: $request->string('origin')->toString(),
+            ));
+        } catch (PasskeyException $exception) {
+            return response()->json([
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => "Passkey registration completed for {$passkey->label}.",
+            'redirect_to' => route('passkeys.dashboard'),
+        ]);
     }
 
     public function storeRegistrationPreview(

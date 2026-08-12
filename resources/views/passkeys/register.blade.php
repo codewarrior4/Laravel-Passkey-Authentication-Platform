@@ -39,10 +39,16 @@
                     <p class="text-xs font-semibold uppercase tracking-[0.24em] text-stone-400">Registration console</p>
                     <h3 class="mt-2 text-3xl font-semibold text-white">Create a passkey</h3>
                 </div>
-                <span class="rounded-full border border-amber-400/30 bg-amber-300/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-amber-200">Preview flow</span>
+                <span class="rounded-full border border-amber-400/30 bg-amber-300/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-amber-200">Browser ceremony</span>
             </div>
 
-            <form method="POST" action="{{ route('passkeys.register.preview') }}" class="mt-8 grid gap-5">
+            <form
+                method="POST"
+                action="{{ route('passkeys.register.start') }}"
+                class="mt-8 grid gap-5"
+                data-passkey-register
+                data-finish-url="{{ route('passkeys.register.finish') }}"
+            >
                 @csrf
 
                 <div class="grid gap-5 md:grid-cols-2">
@@ -93,14 +99,20 @@
                     <p class="text-sm font-semibold text-white">What happens next</p>
                     <div class="grid gap-3 text-sm leading-6 text-stone-300">
                         <p>1. The platform now creates the user, device, passkey draft, and challenge window.</p>
-                        <p>2. The browser will next ask the authenticator to create a passkey bound to this relying party.</p>
-                        <p>3. Wednesday's ceremony work will complete the credential verification and final public key storage.</p>
+                        <p>2. The browser asks the authenticator to create a passkey bound to this relying party.</p>
+                        <p>3. The server validates the challenge, origin, RP hash, and stores the real credential material.</p>
                     </div>
                 </div>
 
+                <div class="hidden rounded-3xl border border-rose-400/20 bg-rose-300/10 px-4 py-3 text-sm text-rose-100" data-passkey-error></div>
+
                 <div class="flex flex-col gap-3 sm:flex-row">
-                    <button type="submit" class="inline-flex items-center justify-center rounded-2xl bg-[linear-gradient(135deg,_rgba(251,191,36,1),_rgba(239,68,68,0.92))] px-5 py-3 text-sm font-semibold text-stone-950 shadow-lg shadow-amber-950/40 transition hover:brightness-105">
-                        Create registration draft
+                    <button
+                        type="submit"
+                        class="inline-flex items-center justify-center rounded-2xl bg-[linear-gradient(135deg,_rgba(251,191,36,1),_rgba(239,68,68,0.92))] px-5 py-3 text-sm font-semibold text-stone-950 shadow-lg shadow-amber-950/40 transition hover:brightness-105"
+                        data-passkey-submit
+                    >
+                        Register passkey in browser
                     </button>
                     <a href="{{ route('passkeys.login') }}" class="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/[0.08]">
                         Continue to sign-in screen
