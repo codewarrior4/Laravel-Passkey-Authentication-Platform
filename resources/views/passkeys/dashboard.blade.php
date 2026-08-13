@@ -89,10 +89,38 @@
                                     </div>
                                     <p class="mt-2 text-sm leading-6 text-stone-300">{{ $device['type'] }}</p>
                                     <p class="mt-1 text-xs uppercase tracking-[0.16em] text-stone-500">{{ $device['owner'] }}</p>
+                                    <p class="mt-1 text-xs uppercase tracking-[0.16em] text-stone-500">Added {{ $device['created_at'] }}</p>
                                 </div>
-                                <div class="text-sm text-stone-300">
+                                <div class="grid gap-3 text-sm text-stone-300 lg:justify-items-end">
                                     <p class="font-medium text-white">Last used {{ $device['last_used'] }}</p>
                                     <p class="mt-1">{{ $device['passkeys_count'] }} linked passkey {{ \Illuminate\Support\Str::plural('record', $device['passkeys_count']) }}.</p>
+                                    @if ($device['trust'] !== 'Revoked')
+                                        <form method="POST" action="{{ route('passkeys.devices.rename', $device['id']) }}" class="flex flex-col gap-2 sm:flex-row">
+                                            @csrf
+                                            <input
+                                                type="text"
+                                                name="label"
+                                                value="{{ $device['name'] }}"
+                                                class="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2 text-sm text-white outline-none transition focus:border-sky-300/40"
+                                            >
+                                            <button
+                                                type="submit"
+                                                class="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/[0.08]"
+                                            >
+                                                Rename
+                                            </button>
+                                        </form>
+
+                                        <form method="POST" action="{{ route('passkeys.devices.revoke', $device['id']) }}">
+                                            @csrf
+                                            <button
+                                                type="submit"
+                                                class="inline-flex items-center justify-center rounded-2xl border border-rose-400/30 bg-rose-300/10 px-4 py-2 text-sm font-semibold text-rose-100 transition hover:bg-rose-300/15"
+                                            >
+                                                Revoke device
+                                            </button>
+                                        </form>
+                                    @endif
                                 </div>
                             </div>
                         </article>

@@ -6,9 +6,11 @@ use App\Authentication\Passkeys\Contracts\AuthenticationAudit;
 use App\Authentication\Passkeys\Contracts\PasskeyService;
 use App\Authentication\Passkeys\DTO\FinishPasskeyAuthenticationData;
 use App\Authentication\Passkeys\Exceptions\PasskeyException;
+use App\Authentication\Passkeys\Services\SecurityRiskEvaluator;
 use App\Authentication\Passkeys\Support\Base64Url;
 use App\Models\Passkey;
 use App\Models\User;
+use Carbon\CarbonImmutable;
 use Illuminate\Auth\AuthManager;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,6 +21,7 @@ final readonly class FinishPasskeyAuthenticationAction
         private AuthenticationAudit $audit,
         private AuthManager $auth,
         private PasskeyService $passkeyService,
+        private SecurityRiskEvaluator $securityRiskEvaluator,
     ) {}
 
     public function handle(FinishPasskeyAuthenticationData $data, Request $request): User
@@ -31,7 +34,7 @@ final readonly class FinishPasskeyAuthenticationAction
                 throw new PasskeyException('The authentication challenge is missing. Start the sign-in flow again.');
             }
 
-            if (now()->greaterThan($challengeExpiresAt)) {
+            if (CarbonImmutable::parse($challengeExpiresAt)->isPast()) {
                 throw new PasskeyException('The authentication challenge has expired.');
             }
 
@@ -100,6 +103,21 @@ final readonly class FinishPasskeyAuthenticationAction
                 throw new PasskeyException('Passkey signature verification failed.');
             }
 
+            $riskScore = $this->securityRiskEvaluator->evaluate($passkey, $request);
+
+            if ($riskScore->shouldBlock()) {
+                $this->audit->record('suspicious.activity.detected', $passkey->user_id, [
+                    'device_id' => $passkey->device_id,
+                    'ip_address' => $request->ip(),
+                    'passkey_id' => $passkey->id,
+                    'risk_level' => $riskScore->level,
+                    'signals' => $riskScore->signals,
+                    'user_agent' => (string) $request->userAgent(),
+                ]);
+
+                throw new PasskeyException('This sign-in was blocked for review.');
+            }
+
             $passkey->forceFill([
                 'counter' => $signCount,
                 'last_used_at' => now(),
@@ -118,9 +136,20 @@ final readonly class FinishPasskeyAuthenticationAction
                 'device_id' => $passkey->device_id,
                 'ip_address' => $request->ip(),
                 'passkey_id' => $passkey->id,
-                'risk_level' => 'low',
+                'risk_level' => $riskScore->level,
                 'user_agent' => (string) $request->userAgent(),
             ]);
+
+            if ($riskScore->isElevated()) {
+                $this->audit->record('suspicious.activity.detected', $passkey->user_id, [
+                    'device_id' => $passkey->device_id,
+                    'ip_address' => $request->ip(),
+                    'passkey_id' => $passkey->id,
+                    'risk_level' => $riskScore->level,
+                    'signals' => $riskScore->signals,
+                    'user_agent' => (string) $request->userAgent(),
+                ]);
+            }
 
             $request->session()->forget([
                 'passkey_authentication_challenge',

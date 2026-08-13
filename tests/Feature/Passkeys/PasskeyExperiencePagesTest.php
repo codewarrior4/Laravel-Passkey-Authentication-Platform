@@ -379,7 +379,9 @@ class PasskeyExperiencePagesTest extends TestCase
             'user_id' => $user->id,
         ]);
 
-        $response = $this->actingAs($user)->post(route('passkeys.revoke', $passkey));
+        $response = $this->actingAs($user)
+            ->withSession(['passkey_last_authenticated_at' => now()->toIso8601String()])
+            ->post(route('passkeys.revoke', $passkey));
 
         $response
             ->assertRedirect(route('passkeys.dashboard'))
@@ -395,6 +397,60 @@ class PasskeyExperiencePagesTest extends TestCase
             'event' => 'passkey.revoked',
             'passkey_id' => $passkey->id,
             'user_id' => $user->id,
+        ]);
+    }
+
+    public function test_an_authenticated_user_can_rename_and_revoke_a_device_from_the_dashboard(): void
+    {
+        $user = User::factory()->create([
+            'email' => 'arielle@onely.app',
+            'name' => 'Arielle Stone',
+        ]);
+
+        $device = Device::factory()->create([
+            'label' => 'Executive MacBook',
+            'user_id' => $user->id,
+        ]);
+
+        Passkey::factory()->create([
+            'device_id' => $device->id,
+            'label' => 'Executive MacBook',
+            'status' => 'active',
+            'user_id' => $user->id,
+        ]);
+
+        $renameResponse = $this->actingAs($user)
+            ->withSession(['passkey_last_authenticated_at' => now()->toIso8601String()])
+            ->post(route('passkeys.devices.rename', $device), [
+                'label' => 'Office MacBook',
+            ]);
+
+        $renameResponse
+            ->assertRedirect(route('passkeys.dashboard'))
+            ->assertSessionHas('status', 'Device renamed successfully.');
+
+        $this->assertDatabaseHas('devices', [
+            'id' => $device->id,
+            'label' => 'Office MacBook',
+        ]);
+
+        $revokeResponse = $this->actingAs($user)
+            ->withSession(['passkey_last_authenticated_at' => now()->toIso8601String()])
+            ->post(route('passkeys.devices.revoke', $device));
+
+        $revokeResponse
+            ->assertRedirect(route('passkeys.dashboard'))
+            ->assertSessionHas('status', 'Device revoked and linked passkeys disabled.');
+
+        $this->assertNotNull($device->fresh()?->revoked_at);
+        $this->assertDatabaseHas('authentication_events', [
+            'event' => 'device.revoked',
+            'device_id' => $device->id,
+            'user_id' => $user->id,
+        ]);
+        $this->assertDatabaseHas('passkeys', [
+            'device_id' => $device->id,
+            'status' => 'revoked',
         ]);
     }
 
