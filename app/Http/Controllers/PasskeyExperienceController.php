@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Authentication\Passkeys\Actions\FinishPasskeyAuthenticationAction;
 use App\Authentication\Passkeys\Actions\FinishPasskeyRegistrationAction;
+use App\Authentication\Passkeys\Actions\ListActiveSessionsAction;
 use App\Authentication\Passkeys\Actions\PreviewPasskeyAuthenticationAction;
 use App\Authentication\Passkeys\Actions\PreviewPasskeyRegistrationAction;
 use App\Authentication\Passkeys\Actions\RenameDeviceAction;
 use App\Authentication\Passkeys\Actions\RevokeDeviceAction;
 use App\Authentication\Passkeys\Actions\RevokePasskeyAction;
+use App\Authentication\Passkeys\Actions\RevokeSessionAction;
 use App\Authentication\Passkeys\Actions\StartBrowserPasskeyAuthenticationAction;
 use App\Authentication\Passkeys\Actions\StartBrowserPasskeyRegistrationAction;
 use App\Authentication\Passkeys\Contracts\AuthenticationAudit;
@@ -32,6 +34,7 @@ use App\Models\AuthenticationEvent;
 use App\Models\Device;
 use App\Models\Passkey;
 use App\Models\User;
+use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -39,6 +42,8 @@ use Illuminate\View\View;
 
 class PasskeyExperienceController extends Controller
 {
+    public function __construct(private readonly ListActiveSessionsAction $listActiveSessionsAction) {}
+
     public function overview(PasskeyService $passkeyService): View
     {
         return view('passkeys.overview', $this->buildPageData($passkeyService, [
@@ -72,10 +77,6 @@ class PasskeyExperienceController extends Controller
             ipAddress: $request->ip() ?? '127.0.0.1',
             userAgent: (string) $request->userAgent(),
         ));
-
-        session([
-            'passkey_demo_user_id' => User::query()->where('email', $request->string('work_email')->toString())->value('id'),
-        ]);
 
         return response()->json([
             'passkey_id' => $ceremony->passkeyId,
@@ -204,7 +205,6 @@ class PasskeyExperienceController extends Controller
             ], 422);
         }
 
-        session(['passkey_demo_user_id' => $user->id]);
         $request->session()->put('passkey_last_authenticated_at', now()->toIso8601String());
 
         return response()->json([
@@ -300,6 +300,29 @@ class PasskeyExperienceController extends Controller
         return to_route('passkeys.dashboard')->with('status', 'Passkey removed from this account.');
     }
 
+    public function revokeSession(
+        Request $request,
+        string $session,
+        RevokeSessionAction $revokeSessionAction,
+    ): RedirectResponse {
+        $user = $this->currentAuthenticatedUser();
+
+        abort_unless($user instanceof User, 403);
+
+        $revoked = $revokeSessionAction->handle(
+            $session,
+            $request->session()->getId(),
+            $user,
+            $request->ip() ?? '127.0.0.1',
+            (string) $request->userAgent(),
+        );
+
+        return to_route('passkeys.dashboard')->with(
+            'status',
+            $revoked ? 'Selected session ended successfully.' : 'Current session stays active. Use Sign out to end this browser session.',
+        );
+    }
+
     public function dashboard(PasskeyService $passkeyService): View
     {
         return view('passkeys.dashboard', $this->buildPageData($passkeyService, [
@@ -319,29 +342,27 @@ class PasskeyExperienceController extends Controller
     {
         $isProtectedPage = $page['current_route'] === 'passkeys.dashboard';
         $isPublicPage = in_array($page['current_route'], ['passkeys.overview', 'passkeys.login', 'passkeys.register'], true);
-        $focusUser = $this->currentAuthenticatedUser()
-            ?? $this->currentDemoUser()
-            ?? User::query()
-                ->with(['authenticationEvents', 'devices', 'passkeys'])
-                ->withCount(['authenticationEvents', 'devices', 'passkeys'])
-                ->latest('id')
-                ->first();
+        $focusUser = $isProtectedPage ? $this->currentAuthenticatedUser() : null;
 
         $activePasskeysCount = Passkey::query()
+            ->when($focusUser instanceof User, fn ($query) => $query->where('user_id', $focusUser->id))
             ->where('status', 'active')
             ->whereNull('revoked_at')
             ->count();
 
         $pendingPasskeysCount = Passkey::query()
+            ->when($focusUser instanceof User, fn ($query) => $query->where('user_id', $focusUser->id))
             ->where('status', 'pending')
             ->whereNull('revoked_at')
             ->count();
 
         $revokedDevicesCount = Device::query()
+            ->when($focusUser instanceof User, fn ($query) => $query->where('user_id', $focusUser->id))
             ->whereNotNull('revoked_at')
             ->count();
 
         $latestAuthenticationEvent = AuthenticationEvent::query()
+            ->when($focusUser instanceof User, fn ($query) => $query->where('user_id', $focusUser->id))
             ->latest('occurred_at')
             ->value('occurred_at');
 
@@ -353,7 +374,6 @@ class PasskeyExperienceController extends Controller
             ->map(fn (Device $device): array => [
                 'id' => $device->id,
                 'name' => $device->label,
-                'owner' => $device->user?->email ?? 'No linked account',
                 'type' => ucfirst($device->type ?: 'platform').' device',
                 'last_used' => $device->last_used_at?->diffForHumans() ?? 'Not used yet',
                 'created_at' => $device->created_at?->format('M j, Y') ?? 'Unknown',
@@ -379,29 +399,26 @@ class PasskeyExperienceController extends Controller
                 ->all()
             : [];
 
-        $recentSessions = $deviceCollection
-            ->whereNotNull('last_used_at')
-            ->sortByDesc('last_used_at')
-            ->take(3)
-            ->map(fn (Device $device): array => [
-                'device' => trim(collect([$device->browser, $device->platform])->filter()->implode(' on ')) ?: $device->label,
-                'location' => $device->ip_address ?? 'IP pending capture',
-                'owner' => $device->user?->email ?? 'No linked account',
-                'status' => $device->revoked_at ? 'Revoked' : 'Recent session',
-                'status_tone' => $device->revoked_at ? 'muted' : 'good',
-            ])
-            ->values()
-            ->all();
+        $recentSessions = $isProtectedPage && $focusUser instanceof User
+            ? $this->listActiveSessionsAction
+                ->handle(
+                    $focusUser,
+                    request()->session()->getId(),
+                    request()->ip() ?? '127.0.0.1',
+                    (string) request()->userAgent(),
+                )
+                ->values()
+                ->all()
+            : [];
 
         $recentAuditEvents = AuthenticationEvent::query()
             ->with(['device', 'user'])
-            ->when($isProtectedPage && $focusUser instanceof User, fn ($query) => $query->where('user_id', $focusUser->id))
+            ->when($focusUser instanceof User, fn ($query) => $query->where('user_id', $focusUser->id))
             ->latest('occurred_at')
             ->take(6)
             ->get()
             ->map(fn (AuthenticationEvent $event): array => [
                 'detail' => $event->device?->label
-                    ?? $event->user?->email
                     ?? $event->ip_address
                     ?? 'Security event captured.',
                 'time' => $event->occurred_at?->diffForHumans() ?? 'Just now',
@@ -411,36 +428,51 @@ class PasskeyExperienceController extends Controller
             ->values()
             ->all();
 
+        $auditEventsCount = AuthenticationEvent::query()
+            ->when($focusUser instanceof User, fn ($query) => $query->where('user_id', $focusUser->id))
+            ->count();
+
         $heroMetrics = $isProtectedPage
             ? [
                 [
-                    'label' => 'Accounts',
-                    'value' => (string) User::query()->count(),
-                    'detail' => 'People currently stored in the passkey workspace.',
+                    'label' => 'Devices',
+                    'value' => (string) count($registeredDevices),
+                    'detail' => 'Trusted devices currently linked to this account.',
                 ],
                 [
                     'label' => 'Active passkeys',
                     'value' => (string) $activePasskeysCount,
-                    'detail' => 'Credentials available for real browser authentication.',
+                    'detail' => 'Credentials available for secure sign-in on this account.',
+                ],
+                [
+                    'label' => 'Active sessions',
+                    'value' => (string) count($recentSessions),
+                    'detail' => count($recentSessions) === 0
+                        ? 'No active browser sessions are stored yet.'
+                        : 'Current and recent browser sessions for this account.',
                 ],
                 [
                     'label' => 'Audit events',
-                    'value' => (string) AuthenticationEvent::query()->count(),
-                    'detail' => $latestAuthenticationEvent === null
+                    'value' => (string) $auditEventsCount,
+                    'detail' => ! $latestAuthenticationEvent instanceof CarbonInterface
                         ? 'No security events have been captured yet.'
                         : 'Latest security event '.$latestAuthenticationEvent->diffForHumans().'.',
-                ],
-                [
-                    'label' => 'Risk alerts',
-                    'value' => (string) AuthenticationEvent::query()->where('event', 'suspicious.activity.detected')->count(),
-                    'detail' => 'Suspicious activity signals recorded for review.',
                 ],
             ]
             : [];
 
+        $featureFlags = collect(config('passkeys.feature_flags'))
+            ->map(fn (array $feature): array => [
+                'active' => (bool) ($feature['active'] ?? false),
+                'key' => (string) ($feature['key'] ?? ''),
+                'label' => (string) ($feature['label'] ?? 'Feature'),
+            ])
+            ->values()
+            ->all();
+
         return [
             ...$page,
-            'featureFlags' => config('passkeys.feature_flags'),
+            'featureFlags' => $featureFlags,
             'heroMetrics' => $heroMetrics,
             'navigationItems' => [
                 ['label' => 'Overview', 'route' => 'passkeys.overview'],
@@ -471,11 +503,13 @@ class PasskeyExperienceController extends Controller
                 ],
                 [
                     'label' => 'Risk alerts',
-                    'state' => (string) AuthenticationEvent::query()->where('event', 'suspicious.activity.detected')->count(),
+                    'state' => (string) AuthenticationEvent::query()
+                        ->when($focusUser instanceof User, fn ($query) => $query->where('user_id', $focusUser->id))
+                        ->where('event', 'suspicious.activity.detected')
+                        ->count(),
                     'description' => 'Authentication attempts that triggered elevated-risk review.',
                 ],
             ],
-            'demoUser' => $isProtectedPage ? $focusUser : null,
             'deviceOptions' => $isProtectedPage ? $this->deviceOptions($registeredDevices) : [],
             'isProtectedPage' => $isProtectedPage,
             'isPublicPage' => $isPublicPage,
@@ -497,19 +531,6 @@ class PasskeyExperienceController extends Controller
             ->find($authenticatedUser->id);
     }
 
-    private function currentDemoUser(): ?User
-    {
-        $demoUserId = session('passkey_demo_user_id');
-
-        if (! is_int($demoUserId) && ! ctype_digit((string) $demoUserId)) {
-            return null;
-        }
-
-        return User::query()
-            ->with(['authenticationEvents', 'devices.passkeys', 'passkeys'])
-            ->find((int) $demoUserId);
-    }
-
     /**
      * @param  array<int, array{name: string}>  $registeredDevices
      * @return array<int, string>
@@ -526,8 +547,6 @@ class PasskeyExperienceController extends Controller
 
     private function redirectWithDemoState(string $route, PasskeyPreviewResult $result): RedirectResponse
     {
-        session(['passkey_demo_user_id' => $result->userId]);
-
         return to_route($route)->with('status', $result->message);
     }
 }

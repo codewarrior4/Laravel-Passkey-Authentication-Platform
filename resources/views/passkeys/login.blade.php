@@ -67,10 +67,10 @@
                 <p class="text-xs font-semibold uppercase tracking-[0.24em] text-stone-400">Simple flow</p>
                 <div class="mt-5 grid gap-4 text-sm leading-6 text-stone-300">
                     <div class="rounded-3xl border border-white/8 bg-black/15 p-4">
-                        Enter your work email.
+                        Your browser looks for a saved passkey on this device.
                     </div>
                     <div class="rounded-3xl border border-white/8 bg-black/15 p-4">
-                        Approve the request with your passkey.
+                        Approve with Touch ID, Face ID, fingerprint, or device unlock.
                     </div>
                     <div class="rounded-3xl border border-white/8 bg-black/15 p-4">
                         Continue into the protected dashboard.

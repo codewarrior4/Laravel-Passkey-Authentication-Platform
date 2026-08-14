@@ -8,6 +8,7 @@ use App\Models\Device;
 use App\Models\Passkey;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
@@ -60,7 +61,8 @@ class PasskeyExperiencePagesTest extends TestCase
             ->assertDontSeeText('Relying Party')
             ->assertDontSeeText('Release controls')
             ->assertDontSeeText('Work email')
-            ->assertDontSeeText('Active passkeys');
+            ->assertDontSeeText('Active passkeys')
+            ->assertSeeText('Your browser looks for a saved passkey on this device.');
     }
 
     public function test_the_registration_preview_redirects_back_with_feedback(): void
@@ -360,6 +362,51 @@ class PasskeyExperiencePagesTest extends TestCase
         ]);
     }
 
+    public function test_the_login_start_endpoint_is_rate_limited(): void
+    {
+        for ($attempt = 0; $attempt < 12; $attempt++) {
+            $this->postJson(route('passkeys.login.start'))->assertOk();
+        }
+
+        $this->postJson(route('passkeys.login.start'))
+            ->assertStatus(429);
+    }
+
+    public function test_registration_can_be_disabled_immediately_via_feature_flag(): void
+    {
+        config()->set('passkeys.feature_flags.enabled.active', true);
+        config()->set('passkeys.feature_flags.registration.active', false);
+
+        $this->get(route('passkeys.register'))
+            ->assertRedirect(route('passkeys.overview'))
+            ->assertSessionHas('status', 'Passkey registration is temporarily unavailable.');
+
+        $this->postJson(route('passkeys.register.start'), [
+            'full_name' => 'Arielle Stone',
+            'work_email' => 'arielle@onely.app',
+            'device_name' => 'Executive MacBook',
+        ])->assertStatus(403)
+            ->assertJson([
+                'message' => 'Passkey registration is temporarily unavailable.',
+            ]);
+    }
+
+    public function test_login_can_be_disabled_immediately_via_feature_flag(): void
+    {
+        config()->set('passkeys.feature_flags.enabled.active', true);
+        config()->set('passkeys.feature_flags.login.active', false);
+
+        $this->get(route('passkeys.login'))
+            ->assertRedirect(route('passkeys.overview'))
+            ->assertSessionHas('status', 'Passkey sign-in is temporarily unavailable.');
+
+        $this->postJson(route('passkeys.login.start'))
+            ->assertStatus(403)
+            ->assertJson([
+                'message' => 'Passkey sign-in is temporarily unavailable.',
+            ]);
+    }
+
     public function test_an_authenticated_user_can_revoke_their_passkey_from_the_dashboard(): void
     {
         $user = User::factory()->create([
@@ -396,6 +443,149 @@ class PasskeyExperiencePagesTest extends TestCase
         $this->assertDatabaseHas('authentication_events', [
             'event' => 'passkey.revoked',
             'passkey_id' => $passkey->id,
+            'user_id' => $user->id,
+        ]);
+    }
+
+    public function test_sensitive_device_actions_require_recent_authentication(): void
+    {
+        $user = User::factory()->create();
+        $device = Device::factory()->create([
+            'user_id' => $user->id,
+        ]);
+
+        $this->actingAs($user)
+            ->post(route('passkeys.devices.rename', $device), [
+                'label' => 'Office MacBook',
+            ])
+            ->assertRedirect(route('passkeys.login'));
+    }
+
+    public function test_dashboard_uses_database_sessions_for_the_authenticated_user(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user);
+        $currentSessionId = session()->getId();
+
+        $this->storeSessionRow(
+            id: $currentSessionId,
+            userId: $user->id,
+            ipAddress: '127.0.0.1',
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36',
+        );
+
+        $this->storeSessionRow(
+            id: 'secondary-browser-session',
+            userId: $user->id,
+            ipAddress: '10.0.0.15',
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36',
+        );
+
+        $this->withSession(['passkey_last_authenticated_at' => now()->toIso8601String()])
+            ->get(route('passkeys.dashboard'))
+            ->assertOk()
+            ->assertSeeText('Current session')
+            ->assertSeeText('Google Chrome')
+            ->assertSeeText('10.0.0.15')
+            ->assertSeeText('End session');
+    }
+
+    public function test_an_authenticated_user_can_revoke_another_session(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user);
+        $currentSessionId = session()->getId();
+
+        $this->storeSessionRow(
+            id: $currentSessionId,
+            userId: $user->id,
+            ipAddress: '127.0.0.1',
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36',
+        );
+
+        $this->storeSessionRow(
+            id: 'secondary-browser-session',
+            userId: $user->id,
+            ipAddress: '10.0.0.15',
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36',
+        );
+
+        $this->withSession(['passkey_last_authenticated_at' => now()->toIso8601String()])
+            ->post(route('passkeys.sessions.revoke', 'secondary-browser-session'))
+            ->assertRedirect(route('passkeys.dashboard'))
+            ->assertSessionHas('status', 'Selected session ended successfully.');
+
+        $this->assertDatabaseMissing('sessions', [
+            'id' => 'secondary-browser-session',
+            'user_id' => $user->id,
+        ]);
+
+        $this->assertDatabaseHas('authentication_events', [
+            'event' => 'session.revoked',
+            'user_id' => $user->id,
+        ]);
+    }
+
+    public function test_failed_authentication_creates_an_audit_event(): void
+    {
+        $keyResource = openssl_pkey_new([
+            'digest_alg' => 'sha256',
+            'private_key_bits' => 2048,
+            'private_key_type' => OPENSSL_KEYTYPE_RSA,
+        ]);
+
+        $privateKey = '';
+        openssl_pkey_export($keyResource, $privateKey);
+        $publicKeyDetails = openssl_pkey_get_details($keyResource);
+        $publicKeyDer = $this->publicKeyDerFromPem($publicKeyDetails['key']);
+
+        $user = User::factory()->create([
+            'email' => 'arielle@onely.app',
+            'name' => 'Arielle Stone',
+        ]);
+
+        $device = Device::factory()->create([
+            'label' => 'Executive MacBook',
+            'user_id' => $user->id,
+        ]);
+
+        Passkey::factory()->create([
+            'counter' => 3,
+            'credential_id' => Base64Url::encode('credential-123'),
+            'credential_id_hash' => hash('sha256', Base64Url::encode('credential-123')),
+            'device_id' => $device->id,
+            'public_key' => Base64Url::encode($publicKeyDer),
+            'status' => 'active',
+            'transports' => ['internal'],
+            'user_id' => $user->id,
+        ]);
+
+        $startResponse = $this->postJson(route('passkeys.login.start'));
+        $startPayload = $startResponse->json();
+
+        $authenticatorData = hash('sha256', config('passkeys.relying_party.id'), true).chr(0x01).pack('N', 4);
+        $clientDataJson = json_encode([
+            'challenge' => $startPayload['public_key']['challenge'],
+            'origin' => config('app.url'),
+            'type' => 'webauthn.get',
+        ], JSON_THROW_ON_ERROR);
+
+        $signatureBase = $authenticatorData.hash('sha256', $clientDataJson, true);
+        openssl_sign($signatureBase, $signature, $privateKey, OPENSSL_ALGO_SHA256);
+        $tamperedSignature = substr($signature, 0, -1).'x';
+
+        $this->postJson(route('passkeys.login.finish'), [
+            'authenticator_data' => Base64Url::encode($authenticatorData),
+            'client_data_json' => Base64Url::encode($clientDataJson),
+            'credential_id' => Base64Url::encode('credential-123'),
+            'origin' => config('app.url'),
+            'signature' => Base64Url::encode($tamperedSignature),
+        ])->assertStatus(422);
+
+        $this->assertDatabaseHas('authentication_events', [
+            'event' => 'passkey.authentication.failed',
             'user_id' => $user->id,
         ]);
     }
@@ -533,5 +723,17 @@ class PasskeyExperiencePagesTest extends TestCase
         ], '', $pem);
 
         return base64_decode($normalized, true) ?: '';
+    }
+
+    private function storeSessionRow(string $id, int $userId, string $ipAddress, string $userAgent): void
+    {
+        DB::table('sessions')->insert([
+            'id' => $id,
+            'user_id' => $userId,
+            'ip_address' => $ipAddress,
+            'user_agent' => $userAgent,
+            'payload' => base64_encode(serialize([])),
+            'last_activity' => now()->timestamp,
+        ]);
     }
 }

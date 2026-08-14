@@ -12,8 +12,8 @@ class PasskeyLabTest extends TestCase
 
         $response
             ->assertOk()
-            ->assertSeeText("Passkey lab shell for the week's real browser testing.")
-            ->assertSeeText('passkeys.enabled')
-            ->assertSeeText('Registration flow unlocks Tuesday');
+            ->assertSeeText('Passkey lab for real browser registration, login, and account checks.')
+            ->assertSeeText('Ready to test')
+            ->assertSeeText('Registration checks');
     }
 }

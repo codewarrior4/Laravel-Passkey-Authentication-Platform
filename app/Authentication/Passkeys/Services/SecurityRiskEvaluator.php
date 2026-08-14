@@ -11,6 +11,14 @@ final class SecurityRiskEvaluator
 {
     public function evaluate(?Passkey $passkey, Request $request, bool $failedAttempt = false): RiskScore
     {
+        if (! (bool) data_get(config('passkeys.feature_flags'), 'risk_engine.active', true)) {
+            return new RiskScore(
+                value: 0,
+                level: 'low',
+                signals: [],
+            );
+        }
+
         $score = 0;
         $signals = [];
 

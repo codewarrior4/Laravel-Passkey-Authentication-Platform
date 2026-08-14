@@ -93,17 +93,19 @@
                                 <p class="mt-2 text-2xl font-semibold text-white">{{ $relyingParty->name }}</p>
                                 <div class="mt-4 grid gap-2 text-sm text-stone-300">
                                     <p><span class="text-stone-500">Identifier</span> {{ $relyingParty->id }}</p>
-                                    <p><span class="text-stone-500">Origins</span> {{ implode(', ', $relyingParty->origins) ?: 'None configured yet' }}</p>
+                                    <p><span class="text-stone-500">Origins</span> {{ count($relyingParty->origins) }} trusted origin {{ \Illuminate\Support\Str::plural('entry', count($relyingParty->origins)) }}</p>
                                 </div>
                             </div>
 
                             <div>
                                 <p class="text-xs font-semibold uppercase tracking-[0.24em] text-stone-400">Release controls</p>
                                 <div class="mt-4 grid gap-3">
-                                    @foreach ($featureFlags as $label => $flag)
+                                    @foreach ($featureFlags as $feature)
                                         <div class="flex items-center justify-between gap-4 rounded-2xl border border-white/8 bg-black/15 px-4 py-3">
-                                            <span class="text-sm font-medium capitalize text-white">{{ str_replace('_', ' ', $label) }}</span>
-                                            <code class="text-xs text-amber-200">{{ $flag }}</code>
+                                            <span class="text-sm font-medium text-white">{{ $feature['label'] }}</span>
+                                            <span class="{{ $feature['active'] ? 'border-emerald-400/20 bg-emerald-300/10 text-emerald-100' : 'border-rose-400/20 bg-rose-300/10 text-rose-100' }} rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em]">
+                                                {{ $feature['active'] ? 'Active' : 'Paused' }}
+                                            </span>
                                         </div>
                                     @endforeach
                                 </div>

@@ -21,11 +21,31 @@ return [
         'origins' => $configuredOrigins,
     ],
     'feature_flags' => [
-        'enabled' => 'passkeys.enabled',
-        'registration' => 'passkeys.registration',
-        'login' => 'passkeys.login',
-        'device_management' => 'passkeys.device-management',
-        'risk_engine' => 'passkeys.risk-engine',
+        'enabled' => [
+            'active' => env('PASSKEYS_ENABLED', true),
+            'key' => 'passkeys.enabled',
+            'label' => 'Passkeys platform',
+        ],
+        'registration' => [
+            'active' => env('PASSKEYS_REGISTRATION_ENABLED', true),
+            'key' => 'passkeys.registration',
+            'label' => 'Registration',
+        ],
+        'login' => [
+            'active' => env('PASSKEYS_LOGIN_ENABLED', true),
+            'key' => 'passkeys.login',
+            'label' => 'Login',
+        ],
+        'device_management' => [
+            'active' => env('PASSKEYS_DEVICE_MANAGEMENT_ENABLED', true),
+            'key' => 'passkeys.device-management',
+            'label' => 'Device management',
+        ],
+        'risk_engine' => [
+            'active' => env('PASSKEYS_RISK_ENGINE_ENABLED', true),
+            'key' => 'passkeys.risk-engine',
+            'label' => 'Risk engine',
+        ],
     ],
     'lab' => [
         'route' => 'passkeys.lab',

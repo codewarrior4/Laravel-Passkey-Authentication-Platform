@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsurePasskeyFeatureIsEnabled;
 use App\Http\Middleware\EnsureRecentPasskeyAuthentication;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -17,6 +18,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ])
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
+            'passkey.feature' => EnsurePasskeyFeatureIsEnabled::class,
             'passkey.reauth' => EnsureRecentPasskeyAuthentication::class,
         ]);
     })

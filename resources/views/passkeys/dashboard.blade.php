@@ -88,7 +88,6 @@
                                         <span class="{{ $trustTone }} rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em]">{{ $device['trust'] }}</span>
                                     </div>
                                     <p class="mt-2 text-sm leading-6 text-stone-300">{{ $device['type'] }}</p>
-                                    <p class="mt-1 text-xs uppercase tracking-[0.16em] text-stone-500">{{ $device['owner'] }}</p>
                                     <p class="mt-1 text-xs uppercase tracking-[0.16em] text-stone-500">Added {{ $device['created_at'] }}</p>
                                 </div>
                                 <div class="grid gap-3 text-sm text-stone-300 lg:justify-items-end">
@@ -160,18 +159,32 @@
                 <div class="mt-6 grid gap-4">
                     @forelse ($recentSessions as $session)
                         <article class="rounded-3xl border border-white/8 bg-black/15 p-4">
-                            <div class="flex items-center justify-between gap-4">
+                            <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                                 <div>
-                                    <h3 class="text-base font-semibold text-white">{{ $session['device'] }}</h3>
-                                    <p class="mt-2 text-sm leading-6 text-stone-300">{{ $session['location'] }}</p>
-                                    <p class="mt-1 text-xs uppercase tracking-[0.16em] text-stone-500">{{ $session['owner'] }}</p>
+                                    <h3 class="text-base font-semibold text-white">{{ $session['browser'] }}</h3>
+                                    <p class="mt-2 text-sm leading-6 text-stone-300">{{ $session['platform'] }}</p>
+                                    <p class="mt-1 text-xs uppercase tracking-[0.16em] text-stone-500">{{ $session['ip_address'] }} • Last seen {{ $session['last_seen'] }}</p>
                                 </div>
-                                <span class="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-stone-300">{{ $session['status'] }}</span>
+                                <div class="flex items-center gap-3">
+                                    <span class="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-stone-300">{{ $session['status'] }}</span>
+
+                                    @unless ($session['is_current'])
+                                        <form method="POST" action="{{ route('passkeys.sessions.revoke', $session['id']) }}">
+                                            @csrf
+                                            <button
+                                                type="submit"
+                                                class="inline-flex items-center justify-center rounded-2xl border border-rose-400/30 bg-rose-300/10 px-4 py-2 text-sm font-semibold text-rose-100 transition hover:bg-rose-300/15"
+                                            >
+                                                End session
+                                            </button>
+                                        </form>
+                                    @endunless
+                                </div>
                             </div>
                         </article>
                     @empty
                         <article class="rounded-3xl border border-dashed border-white/10 bg-black/15 p-4 text-sm leading-6 text-stone-300">
-                            No recent sessions have been stored yet.
+                            No active browser sessions have been stored yet.
                         </article>
                     @endforelse
                 </div>
